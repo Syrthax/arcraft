@@ -92,6 +92,7 @@ class Application:
         # ---- interaction state ----------------------------------------
         self._prev_palm: np.ndarray | None = None
         self._prev_palm_distance: float | None = None  # for two-hand zoom
+        self._prev_hand_heights: tuple[float, float] | None = None  # for two-hand tilt
         self._key_cooldown: dict[int, float] = {}
 
         # ---- FPS bookkeeping -----------------------------------------
@@ -159,10 +160,11 @@ class Application:
         if hands:
             # Check for two-hand zoom gesture first
             if len(hands) == 2:
-                self._process_two_hand_zoom(hands)
-                label = "ZOOM"
+                self._process_two_hand_gesture(hands)
+                label = "ZOOM/TILT"
             else:
                 self._prev_palm_distance = None  # reset zoom state
+                self._prev_hand_heights = None   # reset tilt state
                 hand = hands[0]
                 gs = self._gestures.detect(hand)
                 self._process_gesture(gs, hand)
@@ -177,6 +179,7 @@ class Application:
         else:
             self._prev_palm = None
             self._prev_palm_distance = None
+            self._prev_hand_heights = None
             self._renderer.clear_ghost()
 
         # 4. Upload frame as background texture
@@ -236,11 +239,12 @@ class Application:
             else:
                 self._renderer.clear_ghost()
 
-    def _process_two_hand_zoom(self, hands) -> None:
+    def _process_two_hand_gesture(self, hands) -> None:
         """
-        Process two-hand zoom gesture.
-        Palms moving closer → zoom out
-        Palms moving apart → zoom in
+        Process two-hand gestures:
+        - Palms moving closer/apart → zoom out/in
+        - Left hand raised + right lowered → tilt clockwise
+        - Right hand raised + left lowered → tilt counter-clockwise
         """
         cam = self._renderer.camera
 
@@ -251,18 +255,42 @@ class Application:
         palm0 = hands[0].palm_center_screen * np.array([wx_scale, wy_scale])
         palm1 = hands[1].palm_center_screen * np.array([wx_scale, wy_scale])
 
-        # Calculate current distance between palms
-        current_distance = float(np.linalg.norm(palm0 - palm1))
+        # Determine which hand is left and which is right based on x-position
+        # In mirrored view: left hand appears on right side of screen
+        if palm0[0] > palm1[0]:
+            left_palm, right_palm = palm0, palm1
+            left_hand, right_hand = hands[0], hands[1]
+        else:
+            left_palm, right_palm = palm1, palm0
+            left_hand, right_hand = hands[1], hands[0]
 
+        # --- Zoom: distance between palms ---
+        current_distance = float(np.linalg.norm(palm0 - palm1))
         if self._prev_palm_distance is not None:
-            # Calculate distance change
             delta = current_distance - self._prev_palm_distance
-            # Scale the zoom effect (negative delta = zoom out, positive = zoom in)
-            # Normalize by window width for consistent behavior
             zoom_factor = -delta / self._renderer.width * 30.0
             cam.zoom(zoom_factor)
-
         self._prev_palm_distance = current_distance
+
+        # --- Tilt: compare Y positions (screen Y: lower value = higher on screen) ---
+        # left_palm[1] < right_palm[1] means left hand is higher → tilt clockwise
+        left_y = left_palm[1]
+        right_y = right_palm[1]
+        
+        if self._prev_hand_heights is not None:
+            prev_left_y, prev_right_y = self._prev_hand_heights
+            # Calculate height difference change
+            prev_diff = prev_left_y - prev_right_y  # negative = left higher
+            curr_diff = left_y - right_y
+            delta_diff = curr_diff - prev_diff
+            
+            # Normalize and apply tilt
+            # If delta_diff is negative, left hand moved up relative to right → clockwise
+            # If delta_diff is positive, right hand moved up relative to left → counter-clockwise
+            tilt_speed = delta_diff / self._renderer.height * 2.0
+            cam.tilt(-tilt_speed)  # negative because screen Y is inverted
+        
+        self._prev_hand_heights = (left_y, right_y)
         self._renderer.clear_ghost()
 
     # ------------------------------------------------------------------
@@ -293,7 +321,7 @@ class Application:
             self._renderer.update_cubes(self._world.get_render_data())
             print("  World cleared")
         if _pressed(glfw.KEY_R):
-            cam.yaw, cam.pitch, cam.distance = -0.4, 0.55, 14.0
+            cam.yaw, cam.pitch, cam.distance, cam.roll = -0.4, 0.55, 14.0, 0.0
             cam._sync()
             print("  Camera reset")
 

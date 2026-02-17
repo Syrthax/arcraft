@@ -247,6 +247,7 @@ class Camera:
         self.yaw      = -0.4   # radians, around Y
         self.pitch     = 0.55  # radians, elevation
         self.distance  = 14.0
+        self.roll      = 0.0   # radians, tilt around view axis
 
         self.fov  = 55.0
         self.near = 0.1
@@ -266,10 +267,25 @@ class Camera:
         self.distance = float(np.clip(self.distance + delta, 3.0, 60.0))
         self._sync()
 
+    def tilt(self, delta: float) -> None:
+        """Apply roll/tilt rotation around the view axis."""
+        self.roll = float(np.clip(self.roll + delta, -np.pi / 4, np.pi / 4))
+
     # ---- matrices ---------------------------------------------------
 
     def view_matrix(self) -> np.ndarray:
-        return _look_at(self.position, self.target, self.up)
+        view = _look_at(self.position, self.target, self.up)
+        # Apply roll rotation around the view axis (Z in view space)
+        if abs(self.roll) > 1e-6:
+            c, s = np.cos(self.roll), np.sin(self.roll)
+            roll_mat = np.array([
+                [c, -s, 0, 0],
+                [s,  c, 0, 0],
+                [0,  0, 1, 0],
+                [0,  0, 0, 1]
+            ], dtype=np.float32)
+            view = roll_mat @ view
+        return view
 
     def proj_matrix(self) -> np.ndarray:
         return _perspective(self.fov, self.width / self.height, self.near, self.far)
