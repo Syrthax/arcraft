@@ -79,7 +79,7 @@ class Application:
         # ---- sub-systems ---------------------------------------------
         self._world    = World()
         self._renderer = Renderer(self._ctx, self.WIN_W, self.WIN_H)
-        self._tracker  = HandTracker(max_hands=1)
+        self._tracker  = HandTracker(max_hands=2)
         self._gestures = GestureDetector()
 
         # ---- webcam ---------------------------------------------------
@@ -91,6 +91,7 @@ class Application:
 
         # ---- interaction state ----------------------------------------
         self._prev_palm: np.ndarray | None = None
+        self._prev_palm_distance: float | None = None  # for two-hand zoom
         self._key_cooldown: dict[int, float] = {}
 
         # ---- FPS bookkeeping -----------------------------------------
@@ -156,19 +157,26 @@ class Application:
 
         # 3. Gesture + world update
         if hands:
-            hand = hands[0]
-            gs = self._gestures.detect(hand)
-            self._process_gesture(gs, hand)
+            # Check for two-hand zoom gesture first
+            if len(hands) == 2:
+                self._process_two_hand_zoom(hands)
+                label = "ZOOM"
+            else:
+                self._prev_palm_distance = None  # reset zoom state
+                hand = hands[0]
+                gs = self._gestures.detect(hand)
+                self._process_gesture(gs, hand)
+                label = gs.gesture.name
 
             # Draw landmarks on the webcam feed for visual feedback
             self._tracker.draw_landmarks(frame, hands)
 
             # Draw gesture label
-            label = gs.gesture.name
             cv2.putText(frame, label, (10, 30),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
         else:
             self._prev_palm = None
+            self._prev_palm_distance = None
             self._renderer.clear_ghost()
 
         # 4. Upload frame as background texture
@@ -227,6 +235,35 @@ class Application:
                 self._renderer.set_ghost((gx, gy, gz))
             else:
                 self._renderer.clear_ghost()
+
+    def _process_two_hand_zoom(self, hands) -> None:
+        """
+        Process two-hand zoom gesture.
+        Palms moving closer → zoom out
+        Palms moving apart → zoom in
+        """
+        cam = self._renderer.camera
+
+        # Get palm centers for both hands (in screen pixels)
+        wx_scale = self._renderer.width / self._tracker.frame_size[0]
+        wy_scale = self._renderer.height / self._tracker.frame_size[1]
+
+        palm0 = hands[0].palm_center_screen * np.array([wx_scale, wy_scale])
+        palm1 = hands[1].palm_center_screen * np.array([wx_scale, wy_scale])
+
+        # Calculate current distance between palms
+        current_distance = float(np.linalg.norm(palm0 - palm1))
+
+        if self._prev_palm_distance is not None:
+            # Calculate distance change
+            delta = current_distance - self._prev_palm_distance
+            # Scale the zoom effect (negative delta = zoom out, positive = zoom in)
+            # Normalize by window width for consistent behavior
+            zoom_factor = -delta / self._renderer.width * 30.0
+            cam.zoom(zoom_factor)
+
+        self._prev_palm_distance = current_distance
+        self._renderer.clear_ghost()
 
     # ------------------------------------------------------------------
     # Keyboard
